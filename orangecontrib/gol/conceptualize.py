@@ -6,7 +6,7 @@ import orangecontrib.gol.examples as ex
 
 class BasicConceptualizer:
     """ Basic conceptualizer implements basic goal-oriented learning: 
-    no active learning, no continuous goals (increase/decrease),
+    no continuous goals (increase/decrease),
     no and-or problems. """
     def __init__(self, rule_learner=None, select_goal=None):
         if not rule_learner:
@@ -192,27 +192,57 @@ class QualityValidator:
 
 
 class RuleLearner:
-    def __init__(self, nrules=5, min_cov=1, m=2, min_acc=0.5):
+    def __init__(self, nrules=5, min_cov=1, m=2, min_acc=0.5, implicit=False, active=False):
         self.learner = rules.RulesStar(evc=False, width=nrules*2, m=m)
         self.learner.rule_validator = QualityValidator(self.learner.rule_validator, min_acc)
         self.nrules = nrules
         self.min_cov = min_cov
+        self.implicit = implicit
+        self.active = active
 
-    def __call__(self, examples):
+    def __call__(self, examples, states):
         # learn rules for goal=yes
         self.learner.target_class = "yes"
         rules = self.learner(examples).rule_list
+        if self.implicit:
+            # add implicit conditions
+            rules = self.add_implicit_conditions(rules, examples)
 
         # return only self.nrules rules (each rule must cover at least 
-        # self.min_cov examples)
+        # self.min_cov positive examples)
         sel_rules = []
         all_covered = np.zeros(len(examples), dtype=bool)
+        positive = examples.Y == 1
         for r in rules:
             if len(sel_rules) >= self.nrules:
                 break
             new_covered = r.covered_examples & ~all_covered
+            new_covered &= positive
             if np.count_nonzero(new_covered) >= self.min_cov:
                 sel_rules.append(r)
+                all_covered |= new_covered
         return sel_rules
 
-
+    def add_implicit_conditions(self, rules, examples):
+        """ This method adds implicit conditions to rules. """
+        X, Y, W = examples.X, examples.Y, examples.W if examples.W else None
+        Y = Y.astype(dtype=int)
+        refiner = self.learner.rule_finder.search_strategy.refine_rule
+        positive = Y == 1
+        new_rules = []
+        for rule in rules:
+            # keep refining rule until id does not lose positive examples
+            rule.general_validator = lambda x: True # constraints from learning are not relevant here
+            refined = True
+            while refined:
+                refined = False
+                refined_rules = refiner(X, Y, W, rule)
+                for ref_rule in refined_rules:
+                    if ref_rule.covered_examples & positive == rule.covered_examples & positive:
+                        # set new rule, break
+                        ref_rule.quality = rule.quality
+                        rule = ref_rule
+                        refined = True
+                        break
+            new_rules.append(rule)
+        return new_rules
