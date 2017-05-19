@@ -1,16 +1,22 @@
 from Orange.data import Table, Domain, Instance, DiscreteVariable, \
-                        StringVariable
+                        StringVariable, ContinuousVariable
 
-def create_data(states):
-    features = states[0].features
-    domain = Domain(features, 
+def create_data(data_desc):
+    example_states, example_traces = data_desc.get_example_states()
+    return create_data_from_states(example_states, example_traces), example_states, example_traces
+
+def create_data_from_states(example_states, example_traces):
+    data_desc = example_states[0].domain
+    attributes = data_desc.get_attributes()
+    domain = Domain(attributes,
                     DiscreteVariable.make("goal", values=["no","yes"]),
-                    metas = [StringVariable.make("id")])
+                    metas = [StringVariable.make("id"), ContinuousVariable("trace")])
     data = Table.from_domain(domain)
-    for s in states:
+    for si, s in enumerate(example_states):
         e = Instance(domain)
-        for f in features:
-            e[f] = s.get_feature(f)
+        for f in attributes:
+            e[f] = s.get_attribute(f)
         e["id"] = s.get_id()
+        e["trace"] = example_traces[si]
         data.append(e)
     return data

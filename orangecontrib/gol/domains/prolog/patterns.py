@@ -387,7 +387,7 @@ def get_patterns(tree, types):
                         if cut:
                             yield "cut " + prefix + pat, selected
 
-        if "all" in types or "alt_vars" in types:
+        """if "all" in types or "alt_vars" in types:
             # yield patterns for variable-variable + variable-variable
             # pairs/pairs (within a clause)
             combs = []
@@ -402,7 +402,7 @@ def get_patterns(tree, types):
                 if pat:
                     yield prefix + pat, selected
                     if cut:
-                        yield "cut " + prefix + pat, selected
+                        yield "cut " + prefix + pat, selected"""
         
         # yield patterns for variable-literal / literal-literal pairs
         # yield patterns for singleton literals
@@ -427,12 +427,12 @@ def get_patterns(tree, types):
         if "all" in types or "literal_pairs" in types:
             yield from patterns_with_literals(clause)
 
-        if "all" in types or "names" in types:
+        """if "all" in types or "names" in types:
             if len(clause) > 1 and isinstance(clause[1], Tree):
                 name_leaves = [l for l in clause[1].leaves() if l.type == 'NAME']
                 for comb in combinations(name_leaves, 2):
                     pat = pattern(clause, comb)
-                    yield '{} {}'.format(comb[0].val, comb[1].val), comb
+                    yield '{} {}'.format(comb[0].val, comb[1].val), comb"""
 
 # Extract edits and other data from existing traces for each problem.
 if __name__ == '__main__':

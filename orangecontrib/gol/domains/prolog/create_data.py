@@ -34,6 +34,7 @@ with open('data/attributes_{}.tab'.format(SELECTED), 'w') as pattern_file:
             break
         attrs.append(pat)
         print('a{}\t{}'.format(i, pat), file=pattern_file)
+attrs_set = set(attrs)
 
 # again, lets go over traces, create examples and create graph
 id_counter = 0 # example counter
@@ -70,10 +71,8 @@ for key in traces:
         prev_id = this_id
 
         # create attributes for this example
-        expatts = set()
-        for pat, nodes in get_patterns(str_sol, ["all"]):
-            if pat in patterns:
-                expatts.add(pat)
+        expatts = set([pat for pat, nodes in get_patterns(str_sol, ["all"])])
+        expatts &= attrs_set
 
         # each learning example has only one trace_id
         # if the same state was visited several times, then have several 
@@ -91,5 +90,5 @@ for key in traces:
 
 print("Number of states: {}".format(len(state_graph)))
 print("Number of learning examples: {}".format(len(examples)))
-pickle.dump((state_graph, lex_to_id, patterns, examples), open("data/problem-{}.pickle".format(SELECTED), "wb"))
+pickle.dump((state_graph, lex_to_id, attrs, examples), open("data/problem-{}.pickle".format(SELECTED), "wb"))
 

@@ -1,143 +1,66 @@
 """ State representation for logic programing in
 goal - oriented learning. 
-""" 
-
-# TODO: reimmplement PrologState
-
+"""
+import os
 import pickle
-import collections
-import Orange
+import numpy as np
+from Orange.data import DiscreteVariable
 
-def finished(self):
-    return "yes" if self.examples[self.state][1] else "no"
+class PrologData:
+    def __init__(self, problem_id):
+        # load data
+        filename = os.path.join(os.path.dirname(__file__), "data/problem-{}.pickle".format(problem_id))
+        self.graph, self.lex2id, self.atts, self.examples = pickle.load(open(filename, "rb"))
+        # mapping from attribute name to attribute id
+        self.atts_dict = {at:i for i, at in enumerate(self.atts)}
+        # create sets of attributes for each state
+        self.state_atts = {}
+        for this_id, trace_id, str_sol, atts, lex in self.examples:
+            if this_id not in self.state_atts:
+                self.state_atts[this_id] = set(self.atts_dict[a] for a in atts)
+        self.state_atts[0] = set()
+        # create attributes
+        self.attributes = [DiscreteVariable.make("a{}".format(i), values=["no", "yes"]) for i, at in enumerate(self.atts)]
+        self.attributes.append(DiscreteVariable.make("solved", values=["no", "yes"]))
 
-class HasValue:
-    def __init__(self, value, examples):
-        self.value = value
-        self.examples = examples
-        
-    def __call__(self, obj):
-        return "yes" if self.value in obj.examples[obj.state][0] else "no"
+    def get_example_states(self):
+        """Function returns a list of pairs (state, trace), 
+        each pair is then used as a single learning example. """
+        states = [PrologState(this_id, self) for this_id, trace_id, str_sol, atts, lex in self.examples]
+        traces = np.array([trace_id for this_id, trace_id, str_sol, atts, lex in self.examples], dtype=np.int16)
+        return states, traces
 
-class Prolog(Orange.core.GOL_State):
-    def __init__(self, domain_name="del", skip_domain=False):
-        """ Currently are included only del and member pickled files. """
-        if not skip_domain:
-            self.create_domain(domain_name)
-        self.state = ""
+    def get_attributes(self):
+        return self.attributes
 
-    def create_domain(self, domain_name):
-        """ Prepares domain (attributes) used in GOL learning.
-        """
-        print "creating domain ...", "member"
-        self.graph, self.example_list = pickle.load(open("D:\\work\\domains\\chess\\kbnk\\goalol\\prolog\\%s.pickle" % domain_name, "rb"))
+class PrologState:
+    def __init__(self, state, domain):
+        """ The first argument of constructor is always the state,
+        the second always domain. """
+        self.state = state
+        self.domain = domain
 
-        # parsing previously pickled files
-        atts = set()
-        self.examples = {}
-        self.str_sols = collections.defaultdict(list)
-        for s, ti, vs, solv, str_sol in self.example_list:
-            self.str_sols[str(s)].append(str_sol)
-            if str(s) in self.examples:
-                self.examples[str(s)].append((ti, vs, solv))
-            else:
-                self.examples[str(s)] = [(ti, vs, solv)]
-            atts |= vs
-        traces = set()
-        for k in self.examples:
-            vals = self.examples[k]
-            if any(s for ti,v,s in vals):
-                solved = True
-            else:
-                solved = False
-            self.examples[k] = (vals[0][1], solved, vals[0][0])
-            traces.add(vals[0][0])
-        
-        orng_atts = [Orange.feature.Discrete(str(sa), values = ["yes", "no"]) 
-                     for sa in atts]
-        fin = Orange.feature.Discrete("Finished", values=["yes","no"])
-
-        self.attributes = orng_atts + [fin]
-        self.funcs = {fin.name : finished}
-        for sa in orng_atts:
-            self.funcs[sa.name] = HasValue(sa.name, self.examples)
-            
-        self.att_ids = {a.name:i for i,a in enumerate(self.attributes)}
-        self.domain = Orange.data.Domain(self.attributes, fin)
-        id = Orange.feature.String("id")
-        mid = Orange.feature.Descriptor.new_meta_id()
-        self.domain.add_meta(mid, id)
-
-        trace = Orange.feature.Continuous("trace")
-        mid = Orange.feature.Descriptor.new_meta_id()
-        self.domain.add_meta(mid, trace)
-
-        eval = Orange.feature.Continuous("eval")    
-        mid = Orange.feature.Descriptor.new_meta_id()
-        self.domain.add_meta(mid, eval)    
-
-        achieved = Orange.feature.String("achieved")    
-        mid = Orange.feature.Descriptor.new_meta_id()
-        self.domain.add_meta(mid, achieved)    
-
-    def create_example(self):
-        example = Orange.data.Instance(self.domain)
-        example["id"] = str(self.state)
-        example["eval"] = 1
-        example["trace"] = self.examples[str(self.state)][2]
-        for a in self.attributes:
-            example[a] = self.funcs[a.name](self)
-        return example
-
-    def get_all_states(self):
-        # first compute counts of values
-        all_states = []
-        for k in self.examples:
-            self.state = k
-            if finished(self) == "no":
-                all_states.append(k)
-        """for k in self.graph:
-            for val in self.graph[k]:
-                self.state = val
-                if finished(self) == "no":
-                    all_states.append(k)"""
-        return all_states
-
-    def id(self):
+    def get_id(self):
         return self.state
 
-    def set_state(self, id):
-        self.state = id
-
-    def evaluate(self):
-        return 1.0
-
     def get_moves(self):
-        """ Method that generates possible moves."""
-        moves = Orange.core.GOL_MoveList()
-        if self.state not in self.graph:
-            return moves
-        
-        new_states = self.graph[self.state]
-        for ns in new_states:
-            moves.append(ProMove(self.state, str(ns)))
-        return moves
+        return [PrologState(s, self.domain) for s in self.domain.graph[self.state]]
 
-    def or_node(self):
-        return True
+    def get_attribute(self, at):
+        if at.name == "solved":
+            return self.solved()
+        ex_atts = self.domain.state_atts[self.state]
+        if int(at.name[1:]) in ex_atts:
+            return "yes"
+        return "no"
 
-    def do_move(self, move):
-        self.state = move.new_state
-            
-    def undo_move(self, move):
-        self.state = move.old_state
+    def solved(self):
+        return self.state == 0
 
-    def prune_prob(self, state, goal_list, max_depth, depth):
-        return 0.
+    def __hash__(self):
+        return self.state
+      
+    def __eq__(self, other):
+        return self.state == other.state
 
-    def get_attribute_value(self, at):
-        """ Returns value of at in this current state.
-            It has to be of Orange.data.Value type. """
-        return Orange.data.Value(self.attributes[at], 
-                                 self.funcs[self.attributes[at].name](self))
 
