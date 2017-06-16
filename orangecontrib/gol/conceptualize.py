@@ -1,4 +1,5 @@
 import numpy as np
+import collections
 from Orange.classification.rules import Selector, Rule
 from Orange.data import DiscreteVariable, Table
 import orangecontrib.evcrules.rules as rules
@@ -8,7 +9,7 @@ class BasicConceptualizer:
     """ Basic conceptualizer implements basic goal-oriented learning: 
     no continuous goals (increase/decrease),
     no and-or problems or for two-player games. """
-    def __init__(self, rule_learner=None, select_goal=None):
+    def __init__(self, rule_learner=None, select_goal=None, tree_depth=-1, search_depth=3):
         if not rule_learner:
             self.rule_learner = RuleLearner()
         else:
@@ -17,50 +18,62 @@ class BasicConceptualizer:
             self.select_goal = BreadthFirstSelector()
         else:
             self.select_goal = select_goal
+        self.tree_depth = tree_depth
+        self.search_depth = search_depth
 
-    def __call__(self, learn_examples, learn_states, learn_traces, final_goal, max_depth):
-        goal_validator = GoalValidator(learn_states, max_depth)
+    def __call__(self, learn_examples, learn_states, learn_traces, final_goal, target_trace=None):
+        goal_validator = GoalValidator(learn_states, self.search_depth)
 
         # create initial goal tree
-        # comment: usually we do not have any relevant positives at the beginning,
-        # so set them all to be relavant
-        relevant = np.ones(len(learn_examples), dtype=bool)
         covered = np.zeros(len(learn_examples), dtype=bool)
-        gtree = GoalNode(final_goal, None, 1.0, 1.0, covered, relevant, set(learn_traces))
+        if target_trace and target_trace > -1:
+            traces = set([target_trace])
+        else:
+            traces = set(learn_traces)
+        gtree = GoalNode(final_goal, None, 1.0, 1.0, covered, traces)
         while True:
-            selected = self.select_goal(gtree)
+            selected = self.select_goal(gtree, self.tree_depth)
             if not selected:
                 break
             selected.expanded = True
             if np.all(selected.covered):
                 continue
-            # find positive and negative examples
-            Y = np.zeros(learn_examples.X.shape[0], dtype=int)
-            Yrel = np.zeros(learn_examples.X.shape[0], dtype=int)
+
+            # find solved, positive and negative examples
             indices = np.where(selected.covered == False)[0]
-            for ix in indices:
-                # check whether selected.goal is solvable
-                # check whether this example is relevant
-                # (is close to a relevant example in the above goal)
-                Y[ix], Yrel[ix] = goal_validator(learn_examples[ix], ix, selected.goal, selected.relevant)
-            # create a subset of learn_examples
+            if not np.any(selected.covered):
+                prev_exemplar = np.ones(len(learn_examples), dtype=bool)
+            else:
+                prev_exemplar = selected.covered
+            solved, pos_unsolved, exemplars = goal_validator(learn_examples, indices, prev_exemplar, selected.goal)
+            # if there are any exemplars within solved, add exemplars
+            # to the previous node and select node as unexpanded
+            solved_exemplars = solved & exemplars
+            if np.any(solved_exemplars):
+                selected.covered[indices] |= solved_exemplars
+                selected.expanded = False
+                continue
+
+            # create learning examples (remove solved examples)
+            indices = indices[~solved]
+            exemplars = exemplars[~solved]
             examples = Table.from_table_rows(learn_examples, indices)
-            examples.Y = Y[indices]
-            # create a subset of traces
             traces = learn_traces[indices]
+            examples.Y = pos_unsolved[~solved]
+
             # learn rules
-            rules = self.rule_learner(examples, traces, selected.traces, Yrel)
+            rules = self.rule_learner(examples, exemplars, traces, selected.traces, selected.goal)
             for r in rules:
                 new_goal = Goal(r)
-                success = r.quality
+                #success = r.quality
+                success = r.curr_class_dist[r.target_class] / r.curr_class_dist.sum()
                 default = sum(examples.Y) / examples.Y.shape[0]
-                new_covered = np.array(selected.covered) | Y
-                new_covered[indices] |= r.covered_examples
-                # only positive examples should be added as covered
-                # (other are not solved yet)
-
-                new_traces = set(traces[r.covered_examples]) & selected.traces
-                selected.children.append(GoalNode(new_goal, selected, success, default, new_covered, new_traces))
+                # only exemplars can be added as covered
+                new_covered = np.array(selected.covered)
+                new_covered[indices] = selected.covered[indices] | exemplars
+                new_traces = set(traces[exemplars & r.covered_examples]) & selected.traces
+                selected.children.append(GoalNode(new_goal, selected, success, 
+                                         default, new_covered, new_traces))
             print(gtree)
         return gtree
 
@@ -72,28 +85,56 @@ class GoalValidator:
         # all_states ... a dictionary of all states, value is index in examples
         # all_examples ... all_examples in Orange format
         # ach_states ... numpy arrays of achievable states from each learning example
-        self.all_states, self.all_examples, self.ach_states = self.preprocess(learn_states, max_depth)
+        # ach_learn ... which learning examples are achievable 
+        self.all_states, self.all_examples, self.ach_states, self.ach_learn = self.preprocess(learn_states, max_depth)
 
     def achievable(self, state, depth):
-        ach = [state]
-        if depth == 0:
-            return ach
-        for ns in state.get_moves():
-            ach += self.achievable(ns, depth-1)
+        ach = set()
+        ach.add(state)
+        horizon = ach
+        for d in range(depth):
+            new_ach = set()
+            for s in horizon:
+                new_ach |= set(s.get_moves())
+            horizon = new_ach - ach
+            ach |= horizon
         return ach
 
     def preprocess(self, learn_states, max_depth):
-        all_states = {}
-        ach_sets = [set() for s in learn_states]
-        for si, s in enumerate(learn_states):
-            if s not in all_states:
-                all_states[s] = len(all_states)
+        # add learn states to all states
+        set_learn = set(learn_states)
+        all_states = {} # contains all states / first learn states are added / then all other
+        index = 0
+        for st in set_learn:
+            all_states[st] = index
+            index += 1
+
+        state_ind = collections.defaultdict(list)
+        for li, l in enumerate(learn_states):
+            state_ind[l].append(li)
+
+        ach_sets = [None] * len(learn_states)
+        ach_learn = [None] * len(learn_states)
+        for s in set_learn: 
             # find states that are achievable from s in max_depth
             ach = self.achievable(s, max_depth)
+            # create indices of states
+            ach_set = set()
             for a in ach:
                 if a not in all_states:
                     all_states[a] = len(all_states)
-                ach_sets[si].add(all_states[a])
+                ach_set.add(all_states[a])
+            for si in state_ind[s]:
+                ach_sets[si] = ach_set
+
+            # create a numpy array of achievable learning examples
+            alearn = np.zeros(len(learn_states), dtype=bool)
+            learn_ach = ach & set_learn 
+            for a in learn_ach:
+                alearn[state_ind[a]] = 1
+            for si in state_ind[s]:
+                ach_learn[si] = alearn
+
         state_list = sorted(all_states.keys(), key = lambda s: all_states[s])
         all_examples = ex.create_data_from_states(state_list, np.zeros(len(state_list)))
         ach_states = []
@@ -101,13 +142,24 @@ class GoalValidator:
             ach = np.zeros(len(all_examples), dtype=bool)
             ach[list(s)] = True
             ach_states.append(ach)
-        return all_states, all_examples, ach_states
+        return all_states, all_examples, ach_states, ach_learn
 
-    def __call__(self, example, ix, goal):
-        ach = self.ach_states[ix]
-        achX = self.all_examples.X[ach]
-        achieved = goal(example, achX)
-        return np.any(achieved)
+    def __call__(self, learn_examples, indices, prev_covered, goal):
+        n = len(indices)
+        solved = np.zeros(n, dtype=bool)
+        positive = np.zeros(n, dtype=bool)
+        exemplars = np.zeros(n, dtype=bool)
+        for i, ix in enumerate(indices):
+            example = learn_examples[ix]
+            ach = self.ach_states[ix]
+            solved[i] = goal.achieved(example)
+            if not solved[i]:
+                achX = self.all_examples.X[ach]
+                achieved = goal(example, achX)
+                positive[i] = np.any(achieved)
+            if solved[i] or positive[i]:
+                exemplars[i] = np.any(self.ach_learn[ix] & prev_covered)
+        return solved, positive, exemplars
 
 
 class Goal:
@@ -130,6 +182,13 @@ class Goal:
         start: starting example (numpy array), 
         ends: a list of ending examples (2d numpy arrays). """
         return self.static.evaluate_data(ends)
+
+    def achieved(self, state_instance):
+        """ Is goal achieved in state instance? """
+        return self.static.evaluate_instance(state_instance)
+
+    def selectors(self):
+        return set(self.static.selectors)
 
     @staticmethod
     def create_initial_goal(domain, conditions):
@@ -175,19 +234,16 @@ class GoalNode:
 
     def str_rec(self, indent):
         gstr = ' ' * indent
-        gstr += 'g: {}, succ: {:4.4f}, default: {:4.4f}, cov: {:4.4f}, ntraces: {}\n'.format(
-            str(self.goal), self.success, self.default,
-            float(sum(self.covered))/self.covered.shape[0],
-            len(self.traces))
+        gstr += self.goal2str() + '\n'
         for c in self.children:
             gstr += c.str_rec(indent+2)
         return gstr
 
     def goal2str(self):
-        return 'g: {}, succ: {:4.4f}, default: {:4.4f}, cov: {:4.4f}, ntraces: {}'.format(
+        return 'g: {}, succ: {:4.4f}, default: {:4.4f}, cov: {:4.4f}, ntraces: {}, traces: {}'.format(
             str(self.goal), self.success, self.default,
             float(sum(self.covered))/self.covered.shape[0],
-            len(self.traces))
+            len(self.traces), str(self.traces))
 
 
 
@@ -195,8 +251,10 @@ class BreadthFirstSelector:
     """ 
     Class returns the unexpanded goal that is the closest to the root. 
     """
-    def __call__(self, goal_tree):
+    def __call__(self, goal_tree, tree_depth):
         goal, depth = self.find_closest_unexpanded(goal_tree)
+        if tree_depth>-1 and depth >= tree_depth:
+            return None
         return goal
 
     def find_closest_unexpanded(self, goal_tree):
@@ -224,25 +282,56 @@ class TracesValidator:
     def __init__(self, general_validator, min_traces):
         self.general_validator = general_validator
         self.max_rule_length = self.general_validator.max_rule_length
-        self.min_covered_examples = self.general_validator.min_covered_examples
+        self.additional_validator = None
         self.min_traces = min_traces # each rule has to cover at least this number of traces
         self.ex_traces = None # a numpy array of traces for each learning example
         self.cover_traces = None # a set of traces that should be covered
-        self.positive = None
+        self.exemplars = None
 
     def validate_rule(self, rule):
-        if self.ex_traces is not None:
-            # select covered positive examples and check their traces
-            cov_traces = set(self.ex_traces[rule.covered_examples & self.positive]) & self.cover_traces
-            if len(cov_traces) < self.min_traces:
-                return False
+        # each rule should cover at least min_traces traces
+        # and at least one exemplar
+
+        # exemplar
+        exemp = rule.covered_examples & self.exemplars
+        if not np.any(exemp):
+            return False
+
+        # traces
+        cov_traces = set(self.ex_traces[exemp]) & self.cover_traces
+        if len(cov_traces) < self.min_traces:
+            return False
+
+        if self.additional_validator and not self.additional_validator.validate_rule(rule):
+            return False
+
         return self.general_validator.validate_rule(rule)
 
+class MEstimateEvaluator(rules.Evaluator):
+    def __init__(self, m=2):
+        self.m = m
+        self.selectors = set()
+
+    def evaluate_rule(self, rule):
+        tc = rule.target_class
+        dist = rule.curr_class_dist
+        target = dist[tc]
+        p_dist = rule.initial_class_dist
+        pa = p_dist[tc] / p_dist.sum()
+        dsum = dist.sum()
+        rf = target / dsum
+        if rf < pa:
+            return rf
+        eps = 0
+        for s in rule.selectors:
+            if s in self.selectors:
+                eps += 0.01
+        return (target + self.m * pa) / (dist.sum() + self.m) + eps
 
 class RuleLearner:
-    def __init__(self, nrules=5, min_cov=1, m=2, min_acc=0.0, implicit=False,
-                 active=False, min_traces=0, default_alpha=1.0, parent_alpha=1.0,
-                 max_rule_length=5):
+    def __init__(self, nrules=5, m=2, min_acc=0.0, implicit=False,
+                 active=False, min_covered_examples=1, min_traces=1, unique_cov=1, unique_traces=0, 
+                 default_alpha=1.0, parent_alpha=1.0, max_rule_length=5):
         """
 
         :param nrules: maximal number of returned rules
@@ -251,39 +340,43 @@ class RuleLearner:
         :param min_acc:
         :param implicit:
         :param active:
-        :param min_traces: each rule should cover at least min_traces unique traces
+        :param min_traces: each rule should cover at least min_traces traces
+        :param unique_cov: 
+        :param unique_traces: each rule should cover at least this many unique traces
         :return:
         """
         self.learner = rules.RulesStar(evc=False, width=100, m=m,
                 default_alpha=default_alpha, parent_alpha=parent_alpha,
-                max_rule_length=max_rule_length)
+                max_rule_length=max_rule_length, min_covered_examples=min_covered_examples)
         self.learner.rule_validator = QualityValidator(self.learner.rule_validator, min_acc)
         self.learner.rule_finder.general_validator = TracesValidator(self.learner.rule_finder.general_validator, min_traces)
+        self.learner.evaluator = MEstimateEvaluator()
         self.nrules = nrules
-        self.min_cov = min_cov
         self.implicit = implicit
         self.active = active
         self.min_traces = min_traces
 
-    def __call__(self, examples, example_traces, cover_traces):
+    def __call__(self, examples, exemplars, example_traces, cover_traces, parent_goal):
         """
         Learns a set of rules.
 
         :param examples: learning examples described with attributes and class describing whether
          goal is achievable or not.
-        :param states: states corresponding to learning examples
+        :param pos_nonsolved: positive examples that are not solved with the current goal
         :param example_traces: traces of examples
-        :param cover_traces: a set of traces that have to be covered by rules
+        :param cover_traces: a set of traces that were covered by previous goal
+        :param exemplars: examples that can be used as typical instances of each learned rule
         :return:
         """
-        assert len(examples) == len(example_traces)
+        assert len(examples) == len(example_traces) == len(exemplars)
 
         # learn rules for goal=yes
         self.learner.target_class = "yes"
         # set traces to general validator
         self.learner.rule_finder.general_validator.ex_traces = example_traces
         self.learner.rule_finder.general_validator.cover_traces = cover_traces
-        self.learner.rule_finder.general_validator.positive = examples.Y == 1
+        self.learner.rule_finder.general_validator.exemplars = exemplars
+        self.learner.evaluator.selectors = parent_goal.selectors()
 
         # learn rules
         rules = self.learner(examples).rule_list
@@ -291,23 +384,20 @@ class RuleLearner:
             # add implicit conditions
             rules = self.add_implicit_conditions(rules, examples)
 
-        # return only self.nrules rules (each rule must cover at least 
+        # return only self.nrules rules (each rule must cover at least
         # self.min_cov positive examples)
         # self,min_traces: each rule should have self.min_trace unique traces
         sel_rules = []
         all_covered = np.zeros(len(examples), dtype=bool)
         cov_traces = set()
-        positive = examples.Y == 1
+        #teprint("len:", len(rules), len(examples), examples.Y.sum(), exemplars.sum())
         for r in rules:
             if self.nrules >= 0 and len(sel_rules) >= self.nrules:
                 break
             new_covered = r.covered_examples & ~all_covered
-            new_covered &= positive
-            new_traces = set(example_traces[new_covered])
-            if len(new_traces - cov_traces) < self.min_traces:
-                continue
-            if np.count_nonzero(new_covered) >= self.min_cov:
-                setattr(r, "new_covered_examples", examples.X[new_covered])
+            new_covered &= exemplars
+            new_traces = set(example_traces[new_covered]) & cover_traces
+            if len(new_traces - cov_traces) >= self.min_traces:
                 sel_rules.append(r)
                 all_covered |= new_covered
                 cov_traces |= new_traces
