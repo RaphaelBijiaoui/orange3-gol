@@ -207,7 +207,9 @@ dict_funct = {
     'member': 'memb',
     'append': 'conc',
     'reverse': 'rev',
-    'length': 'len'}
+    'length': 'len',
+    'delete': 'del'}
+
 def translate(node):
     if not isinstance(node, Tree):
         return
