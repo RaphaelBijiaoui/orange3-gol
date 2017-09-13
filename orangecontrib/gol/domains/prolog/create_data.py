@@ -23,7 +23,14 @@ for key in traces:
     tr = traces[key]
     for str_sol, lex, solved in tr:
     # extract attributes from training data
+        #target_lex = [('NAME', 'memb'), ('LPAREN', '('), ('VARIABLE', 'A0'), ('COMMA', ','), ('LBRACKET', '['), ('VARIABLE', 'A1'), ('PIPE', '|'), ('VARIABLE', 'A2'), ('RBRACKET', ']'), ('RPAREN', ')'), ('FROM', ':-'), ('VARIABLE', 'A1'), ('EQ', '=='), ('VARIABLE', 'A0'), ('PERIOD', '.'), ('NAME', 'memb'), ('LPAREN', '('), ('VARIABLE', 'A0'), ('COMMA', ','), ('VARIABLE', 'A1'), ('RPAREN', ')'), ('FROM', ':-'), ('LBRACKET', '['), ('VARIABLE', 'A2'), ('PIPE', '|'), ('VARIABLE', 'A3'), ('RBRACKET', ']'), ('EQU', '='), ('VARIABLE', 'A1'), ('COMMA', ','), ('VARIABLE', 'A0'), ('NEQ', '\\=='), ('VARIABLE', 'A2'), ('COMMA', ','), ('NAME', 'memb'), ('LPAREN', '('), ('VARIABLE', 'A0'), ('COMMA', ','), ('VARIABLE', 'A3'), ('RPAREN', ')'), ('PERIOD', '.')]
+        #if lex != target_lex:
+        #    continue
         for pat, nodes in get_patterns(str_sol, ["all"]):
+            #if pat == '(clause (head (binop "=" variable)))':
+            #    print(lex)
+            #    print(str_sol)
+            #    print()
             patterns[pat] += 1
 
 # save attributes to file
@@ -42,7 +49,9 @@ trace_id = 0
 state_graph = collections.defaultdict(set)
 lex_to_id = {}
 examples = []
+tr_length = 0
 for key in traces:
+    #break
     # select only SELECTED problem
     if key[0] != SELECTED:
         continue
@@ -55,6 +64,7 @@ for key in traces:
         if not parse(str_sol) and str_sol.strip():
             continue
 
+        tr_length += 1
         # store lex (if new)
         lex = tuple(lex)
         if lex not in lex_to_id:
@@ -73,6 +83,10 @@ for key in traces:
         # create attributes for this example
         expatts = set([pat for pat, nodes in get_patterns(str_sol, ["all"])])
         expatts &= attrs_set
+        #if '(clause (head (compound (functor "memb/2") (args (args variable)))) (binop "=" variable))' in expatts:
+        #    print(lex)
+        #    print(str_sol)
+        #    print()
 
         # each learning example has only one trace_id
         # if the same state was visited several times, then have several 
@@ -90,5 +104,6 @@ for key in traces:
 
 print("Number of states: {}".format(len(state_graph)))
 print("Number of learning examples: {}".format(len(examples)))
+print("Average length of trace: {}". format(tr_length / trace_id * 2))
 pickle.dump((state_graph, lex_to_id, attrs, examples), open("data/problem-{}.pickle".format(SELECTED), "wb"))
 

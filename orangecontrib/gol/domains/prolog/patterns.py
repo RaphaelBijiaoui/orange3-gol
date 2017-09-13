@@ -237,11 +237,13 @@ def normalize(clause, full=False):
 
     # select which vars to seek binop for
     cand_vars = set([k for k, c in var_counts.items()]) # if c == 2])
+    #print(cand_vars)
 
     while True:
         var, val = get_binop(normalized, cand_vars)
         if not var:
             break
+        #print(var[0].val)
         cand_vars.remove(var[0].val)
         node = var.parent() # binop node
         parent = node.parent() # parent of binop
@@ -256,17 +258,18 @@ def normalize(clause, full=False):
         elif len(normalized) == 2: # clauses with head only are irrelevant
             # find first occurence 
             if find_var(normalized[0], var): # if var is in head
-                bet = get_vars_between(normalized[1], None, var)
+                bet = get_vars_between(normalized[1], None, node)
             else:
                 # find first occurence of var
                 var_pos = find_var(normalized[1], var)
                 if var_pos != var:
-                    bet = get_vars_between(normalized[1], var_pos, var)
+                    bet = get_vars_between(normalized[1], var_pos, node)
                 else:
                     bet = set()
             # if intersection not empty, cannot replace
-            if val_vars & bet:
-                repl = False
+            repl = True
+            #if val_vars & bet:
+            #    repl = False
         # if var is to be replaced, remove binop and replace variable
         if repl:
             if parent.label() == 'and':
@@ -323,6 +326,7 @@ def has_cut(clause):
 
 def get_patterns(tree, types):
     """ Types: a set of patterns types to be included in the program. """
+    #print(tree)
     if isinstance(tree, str):
         tree = prolog_parse(tree)
         if tree is None:

@@ -286,6 +286,7 @@ class TracesValidator:
         self.min_traces = min_traces # each rule has to cover at least this number of traces
         self.ex_traces = None # a numpy array of traces for each learning example
         self.cover_traces = None # a set of traces that should be covered
+        self.pos = None
         self.exemplars = None
 
     def validate_rule(self, rule):
@@ -297,15 +298,24 @@ class TracesValidator:
         if not np.any(exemp):
             return False
 
-        # traces
+        # traces should continue with at least one exemplar
         cov_traces = set(self.ex_traces[exemp]) & self.cover_traces
+        if len(cov_traces) < 1:
+            return False
+
+        # pattern should be found in different traces
+        pos_cov = rule.covered_examples & self.pos
+        cov_traces = set(self.ex_traces[pos_cov])
         if len(cov_traces) < self.min_traces:
             return False
 
         if self.additional_validator and not self.additional_validator.validate_rule(rule):
             return False
+        
+        if self.general_validator:
+            return self.general_validator.validate_rule(rule)
 
-        return self.general_validator.validate_rule(rule)
+        return True
 
 class MEstimateEvaluator(rules.Evaluator):
     def __init__(self, m=2):
@@ -376,6 +386,7 @@ class RuleLearner:
         self.learner.rule_finder.general_validator.ex_traces = example_traces
         self.learner.rule_finder.general_validator.cover_traces = cover_traces
         self.learner.rule_finder.general_validator.exemplars = exemplars
+        self.learner.rule_finder.general_validator.pos = examples.Y == 1
         self.learner.evaluator.selectors = parent_goal.selectors()
 
         # learn rules
@@ -392,12 +403,12 @@ class RuleLearner:
         cov_traces = set()
         #teprint("len:", len(rules), len(examples), examples.Y.sum(), exemplars.sum())
         for r in rules:
-            if self.nrules >= 0 and len(sel_rules) >= self.nrules:
-                break
+            #if self.nrules >= 0 and len(sel_rules) >= self.nrules:
+            #    break
             new_covered = r.covered_examples & ~all_covered
             new_covered &= exemplars
             new_traces = set(example_traces[new_covered]) & cover_traces
-            if len(new_traces - cov_traces) >= self.min_traces:
+            if len(new_traces - cov_traces) >= 1: #self.min_traces:
                 sel_rules.append(r)
                 all_covered |= new_covered
                 cov_traces |= new_traces
@@ -412,7 +423,12 @@ class RuleLearner:
         positive = Y == 1
         new_rules = []
         for rule in rules:
-            print("rule", rule, rule.curr_class_dist)
+            #rule.create_model()
+            #print("rule", rule, rule.curr_class_dist)
+            # a trick to allow arbitrary long rules
+            gv = rule.general_validator.general_validator
+            rule.general_validator.general_validator = None
+
             pos_covered = rule.covered_examples & positive
             # keep refining rule until id does not lose positive examples
             refined = True
@@ -420,16 +436,16 @@ class RuleLearner:
                 refined = False
                 refined_rules = refiner(X, Y, W, rule)
                 for ref_rule in refined_rules:
-                    ref_rule.create_model()
-                    print("ref", ref_rule, ref_rule.curr_class_dist)
-                    print("val", self.learner.rule_finder.general_validator.validate_rule(ref_rule))
-                    print("traces", self.learner.rule_finder.general_validator.general_validator.min_traces)
+                    #ref_rule.create_model()
+                    #print("ref", ref_rule, ref_rule.curr_class_dist)
+                    #print("val", self.learner.rule_finder.general_validator.validate_rule(ref_rule))
+                    #print("traces", self.learner.rule_finder.general_validator.general_validator.min_traces)
                     if np.array_equal(ref_rule.covered_examples & positive, pos_covered):
                         # set new rule, break
                         ref_rule.quality = rule.quality
                         rule = ref_rule
                         refined = True
                         break
-            rule.create_model()
+            rule.general_validator.general_validator = gv
             new_rules.append(rule)
         return new_rules
