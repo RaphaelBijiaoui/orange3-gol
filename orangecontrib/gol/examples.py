@@ -9,7 +9,7 @@ def create_data_from_states(example_states, example_traces):
     data_desc = example_states[0].domain
     attributes = data_desc.get_attributes()
     domain = Domain(attributes,
-                    DiscreteVariable.make("goal", values=["no","yes"]),
+                    ContinuousVariable.make("complexity"),
                     metas = [StringVariable.make("id"), ContinuousVariable("trace")])
     data = Table.from_domain(domain)
     for si, s in enumerate(example_states):
