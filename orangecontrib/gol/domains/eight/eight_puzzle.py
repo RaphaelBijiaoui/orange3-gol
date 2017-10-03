@@ -63,7 +63,7 @@ class EightPuzzleDomain:
             states += trace
             traces += [trace_id] * len(trace)
             trace_id += 1
-        return states, np.array(traces, dtype=np.int16)
+        return np.array(states, dtype=object), np.array(traces, dtype=np.int16)
 
     def get_attributes(self):
         return self.attributes
@@ -121,7 +121,7 @@ class EightPuzzleState:
     def get_attribute(self, at):
         return self.domain.get_attribute(at, self.state)
 
-    def solved(self):
+    def achieved(self, goal):
         return self.state == b"123456780"
 
     def __hash__(self):
