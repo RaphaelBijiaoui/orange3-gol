@@ -26,9 +26,9 @@ examples = Table("eight.tab")
 # * each goal should cover at least 200 examples,
 # * each transition between goals should represent at least 100 examples
 # * the significance of each condition of rule should be at least 0.05 (t-test)
-rule_learner = RegressiveRuleLearner(min_covered_examples=300,
+rule_learner = RegressiveRuleLearner(min_covered_examples=500,
                                      min_transition_examples=100,
-                                     cond_alpha=0.05, K=100)
+                                     cond_alpha=0.05, k=100)
 
 # create goal validator (a class for estimating goal complexity)
 goal_validator = GoalValidatorExponentialDepth(base=2.6, inf_complexity_depth=12,

@@ -1,4 +1,6 @@
-from Orange.data import Table, Domain, Instance, DiscreteVariable, \
+""" Creates examples from states for goal-oriented learning.
+"""
+from Orange.data import Table, Domain, Instance, \
                         StringVariable, ContinuousVariable
 
 def create_data(data_desc):

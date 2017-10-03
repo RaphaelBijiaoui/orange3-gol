@@ -1,54 +1,53 @@
-""" A module for learning relationships (rules), where class
- is continuous and attributes can be of arbitrary types.
-"""
+""" A module for learning a single rule in domains with continuous class. """
 from copy import copy
 from collections import Counter
 import numpy as np
-from Orange.classification.rules import Selector, LengthEvaluator, Evaluator, Validator
-from orangecontrib.gol.rule import RRule
+from scipy.stats import norm
+from Orange.classification.rules import Selector, LengthEvaluator
+from orangecontrib.gol.rule import RRule, MeanEvaluator, GuardianValidator, TTestValidator
 EPS = 1e-3
 
 class RegressiveRuleLearner:
-    def __init__(self, min_cover=10, K=10):
-        self.learner = BasicLearner(width=10, min_cover=min_cover, K=K)
+    """ A rule learner used in goal-oriented learning. A wrapper around
+     BasicLearner. """
+    def __init__(self, min_covered_examples=1, min_transition_examples=1, k=10,
+                 goal_alpha=0.05, cond_alpha=1.0):
+        self.learner = BasicLearner(width=10, min_covered_examples=min_covered_examples,
+                                    k=k, cond_alpha=cond_alpha)
+        self.goal_alpha = goal_alpha
+        self.goal_t_threshold = norm.ppf(1-self.goal_alpha)
+        self.min_transition_examples = min_transition_examples
 
-    def __call__(self, data):
+    def __call__(self, data, goal_selector):
         X, Y, W = data.X, data.Y, data.W if data.W else None
-        rules = self.learner.fit_storage(data)
-        return rules[0]
-        
-        selected_rules = []
-        covered_relevant = np.zeros(X.shape[0], dtype=bool)
-        for r in rules:
-            new_covered = ~covered_relevant & r.covered_examples & relevant
-            if new_covered.any():
-                selected_rules.append(r)
-                covered_relevant |= new_covered
-
-        return selected_rules
+        rule = self.learner.fit_storage(data, goal_selector)
+        return rule
 
 class BasicLearner:
     """
-    A learner for regression rules that employes the beam search strategy.
-    Rules are learned from a set of learning instances and an initial rule.
+    A learner for regression rules that employs  beam search strategy.
     """
-    def __init__(self, width=30, min_cover=30, K=10):
+    def __init__(self, width=5, min_covered_examples=1, k=10, cond_alpha=0.05,
+                 max_rule_length=10):
         """
         :param width: beam width
         :param min_cover: minimal coverage of relevant examples
         :return:
         """
         self.width = width
-        self.min_cover = min_cover
-        self.K = K
+        self.k = k
 
         # memoization attributes (defined later, here used only for reference)
         self.visited = None
         self.storage = None
-        self.bestr = None
-        self.bestq = None
 
-    def fit_storage(self, data):
+        self.significance_validator = TTestValidator(alpha=cond_alpha)
+        self.quality_evaluator = MeanEvaluator(self.k)
+        self.complexity_evaluator = LengthEvaluator()
+        self.general_validator = GuardianValidator(max_rule_length=max_rule_length,
+                                                   min_covered_examples=min_covered_examples)
+
+    def fit_storage(self, data, goal_selector):
         """
         :param data: learing instances (Orange format)
         :param relevant: a numpy array specifying which examples have to be covered by rules
@@ -56,27 +55,20 @@ class BasicLearner:
         """
         X, Y, W = data.X, data.Y, data.W if data.W else None
         # initialize empty rule
-        initial_rule = RRule(np.mean(Y), selectors=[], domain=data.domain,
-                significance_validator = None,
-                quality_evaluator = MeanEvaluator(self.K),
-                complexity_evaluator = LengthEvaluator(),
-                general_validator = GuardianValidator())
+        initial_rule = RRule(list(range(len(goal_selector.all_goals))), goal_selector,
+                             selectors=[], domain=data.domain,
+                             significance_validator=self.significance_validator,
+                             quality_evaluator=self.quality_evaluator,
+                             complexity_evaluator=self.complexity_evaluator,
+                             general_validator=self.general_validator)
         initial_rule.filter_and_store(X, Y, W, None)
         initial_rule.do_evaluate()
-        initial_rule.is_valid()
-
-        # initialize star
         star = [initial_rule]
-        self.storage = {} # a dictionary for memoizing stuff
+        best_rule = initial_rule
 
         # use visited to prevent learning the same rule all over again
-        self.visited = set(r.covered_examples.tostring() for r in star)
-
-        # update best rule
-        self.bestr = np.empty(X.shape[0], dtype=object)
-        self.bestq = np.full(X.shape[0], np.max(Y), dtype=float)
-        for r in star:
-            self.update_best(r)
+        self.visited = set(r for r in star)
+        self.storage = {} # a dictionary for memoizing stuff
 
         # iterate until star contains candidate rules
         while star:
@@ -86,71 +78,16 @@ class BasicLearner:
                 rules = self.refine_rule(X, Y, W, r)
                 # work refined rules
                 for nr in rules:
-                    rkey = nr.covered_examples.tostring()
-                    if rkey not in self.visited and nr.quality < nr.parent_rule.quality:
-                        # rule is consistent with basic conditions
-                        # can it be new best?
-                        if nr.covered_examples.sum() >= self.min_cover:
-                            self.update_best(nr)
-                            new_star.append(nr)
-                    self.visited.add(rkey)
+                    if (nr not in self.visited and nr.quality < nr.parent_rule.quality and
+                            nr.is_valid()):
+                        if nr.is_significant() and nr.quality < best_rule.quality:
+                            best_rule = nr
+                        new_star.append(nr)
+                    self.visited.add(nr)
+            new_star.sort(key=lambda r: r.quality)
+            star = new_star[:self.width]
+        return best_rule
 
-            # assign a rank to each rule in new star
-            nrules = len(new_star)
-            inst_quality = np.full((X.shape[0], nrules), initial_rule.quality)
-            for ri, r in enumerate(new_star):
-                inst_quality[r.covered_examples, ri] = r.quality
-            sel_rules = min(nrules, 5)
-            queues = np.argsort(inst_quality)[:, :sel_rules]
-
-            # create new star from queues
-            new_star_set = set()
-            index = 0
-            while len(new_star_set) < self.width:
-                if index >= sel_rules:
-                    break
-                # pop one rule from each queue and put into a temporary counter
-                cnt = Counter()
-                for qi, q in enumerate(queues):
-                    ri = q[index]
-                    if inst_quality[qi, ri] > 0:
-                        cnt[ri] += 1
-                if not cnt:
-                    break
-                elts = cnt.most_common()
-                for e, _ in elts:
-                    if e in new_star_set:
-                        continue
-                    new_star_set.add(e)
-                    if len(new_star_set) >= self.width:
-                        break
-                index += 1
-            star = [new_star[ri] for ri in new_star_set]
-
-        # select best rules
-        rule_list = []
-        self.visited = set()
-        for r in self.bestr:
-            # add r
-            self.add_rule(rule_list, r)
-        rule_list = sorted(rule_list, key=lambda r: r.quality)
-        return rule_list
-
-
-    def update_best(self, rule):
-        """ Maintains a list of best rules for all learning instances. """
-        indices = (rule.covered_examples) & (rule.quality + EPS < self.bestq)
-        self.bestr[indices] = rule
-        self.bestq[indices] = rule.quality
-
-    def add_rule(self, rule_list, rule):
-        """ Adds a rule to the final rule list if the rule is not yet in it. """
-        if rule is None:
-            return
-        rkey = rule.covered_examples.tostring()
-        if rkey not in self.visited:
-            rule_list.append(rule)
-        self.visited.add(rkey)
 
     def refine_rule(self, X, Y, W, candidate_rule):
         """ Refines rule with new conditions. Returns several refinements. """
@@ -174,8 +111,8 @@ class BasicLearner:
         for curr_selector in possible_selectors:
             copied_selectors = copy(candidate_rule_selectors)
             copied_selectors.append(curr_selector)
-
-            new_rule = RRule(candidate_rule.global_avg,
+            new_rule = RRule(candidate_rule.predicted_goals[:],
+                             candidate_rule.goal_selector,
                              selectors=copied_selectors,
                              parent_rule=candidate_rule,
                              domain=domain,
@@ -238,31 +175,3 @@ class BasicLearner:
                               smh not in existing_selectors]
 
         return possible_selectors
-
-
-
-class MeanEvaluator(Evaluator):
-    """ Return blended mean value of class of examples 
-    covered by rule.
-    """
-    def __init__(self, K):
-        self.K = K
-
-    def evaluate_rule(self, rule):
-        return (rule.stats_in[0] + self.K * rule.global_avg) / (rule.covered + self.K)
-
-class GuardianValidator(Validator):
-    """
-    Discard rules that
-    - cover less than the minimum required number of examples,
-    - are too complex.
-    """
-    def __init__(self, max_rule_length=5, min_covered_examples=1):
-        self.max_rule_length = max_rule_length
-        self.min_covered_examples = min_covered_examples
-
-    def validate_rule(self, rule):
-        num_target_covered = rule.stats_in[5]
-        return (num_target_covered >= self.min_covered_examples and
-               rule.length <= self.max_rule_length)
-
