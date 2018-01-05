@@ -13,8 +13,6 @@ class GraphConceptualizer:
                             RegressiveRuleLearner()
         self.goal_validator = goal_validator if goal_validator is not None else \
                               GoalValidatorExponentialDepth()
-        self.min_transition_examples = self.rule_learner.min_transition_examples
-
 
     def __call__(self, learn_examples, learn_states, learn_traces, final_goal):
 
@@ -26,10 +24,10 @@ class GraphConceptualizer:
         learn_examples = Table.from_table_rows(learn_examples, final_examples)
         learn_traces = learn_traces[final_examples]
         learn_states = learn_states[final_examples]
-
         # create initial goal graph
         complexities = self.goal_validator(final_goal, learn_examples,
                                            learn_states, covered)
+        print("complexities")
         # const containing maximal possible complexity of learning examples
         HIGH_COMP_CONST = np.max(complexities) + EPS
         ggraph = GoalNode(final_goal, 0, [], complexities, traces)
@@ -38,14 +36,24 @@ class GraphConceptualizer:
             if np.all(covered):
                 break
 
-            # select goals that have at least 200 examples among best
             indices = ~covered
-            nodes = list(ggraph.get_nodes())
-            nodes.sort(key=lambda n: np.mean(n.complexities[indices]), reverse=True)
-
+            
+            # create current learning examples
+            curr_examples = Table.from_table_rows(learn_examples, indices)
+            curr_traces = learn_traces[indices]
+            
+            # learn a rule
+            all_complexities = [n.complexities[indices] for n in ggraph.get_nodes()]
+            rule = self.rule_learner.fit_storage(curr_examples, all_complexities)
+            
+            #nodes = list(ggraph.get_nodes())
+            #nodes.sort(key=lambda n: np.mean(n.complexities[indices]), reverse=True)
+            #print(nodes)
+            
+            
             # select relevant goals
-            gsel = GoalSelector(nodes, [n.complexities for n in nodes],
-                                self.min_transition_examples)
+            #gsel = GoalSelector(nodes, [n.complexities for n in nodes],
+            #                    self.min_transition_examples)
             node_indexes, _ = gsel(list(range(len(nodes))), indices)
             # create a list of all goal complexities in nodes
             nodes = [nodes[ni] for ni in node_indexes]
@@ -113,14 +121,14 @@ class GoalNode:
 
     def get_nodes(self):
         """ Returns a set of all nodes in this graph. """
-        nodes = set([self])
+        nodes = [self]
         for c in self.children:
-            nodes |= c.get_nodes()
+            nodes.extend(c.get_nodes())
         return nodes
 
     def __str__(self):
         """ String representation of graph. """
-        nodes = list(self.get_nodes())
+        nodes = self.get_nodes()
         nodes.sort(key=lambda gn: gn.goal.rule.mean)
         gstr = ''
         for node in nodes:

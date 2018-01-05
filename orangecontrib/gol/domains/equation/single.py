@@ -1,5 +1,7 @@
 import sympy
+import numpy as np
 from Orange.data import DiscreteVariable
+import orangecontrib.gol.examples as ex
 
 def minus(st):
     """ if any(a, b, c, or d) are not zero, then you can substract
@@ -47,63 +49,50 @@ for st in toexplore:
 strstates = {}
 for s in states:
     strstates[str(s)] = s
-    
-def create_domain():
-    """ Prepares domain (attributes) used in GOL learning.
-    """
-    features = []
-    for var in ["a", "b", "c", "d"]:
-        features.append(DiscreteVariable.make(var, values=["0","1","2"]))
-    features.append(DiscreteVariable.make("solved", values=["no", "yes"]))
-    return features
 
-class State:
-    features = create_domain()
+class Eq1Domain:
+    """ Prepares domain (attributes) used in GOL learning. """
+    def __init__(self):
+        self.attributes = []
+        for var in ["a", "b", "c", "d"]:
+            self.attributes.append(DiscreteVariable.make(var, values=["0","1","2"]))
+        self.attributes.append(DiscreteVariable.make("solved", values=["no", "yes"]))
 
-    def __init__(self, state=None):
-        if not state:
-            self.state = start
-        else:
-            self.state = state
+    def create_learning_examples(self):
+        eq_states = []
+        for s in states:
+            state = Eq1State(s, self)
+            eq_states.append(state)
+        traces = [1] * len(eq_states)
+        return (ex.create_data_from_states(eq_states, traces), 
+                np.array(eq_states, dtype=object), 
+                np.array(traces, dtype=int))
 
-    @staticmethod
-    def get_all_states():
-        all_states = []
-        for k in strstates:
-            state = State()
-            state.state = strstates[k]
-            if state.solved() == "no":
-                all_states.append(state)
-        return all_states
+    def get_attributes(self):
+        return self.attributes
 
-    def get_id(self):
-        return self.state
+    def get_attribute(self, at, state):
+        if at.name == "solved":
+            val = state.state
+            if val[0] == 1 and val[1] == 0 and val[2] == 0:
+                return "yes"
+            return "no"
+        return eval("self.{}(state)".format(at.name))
 
-    def get_moves(self):
-        """ Method that generates possible moves. """
-        moves = []
-        new_states = states[self.state]
-        for ns in new_states:
-            moves.append(State(ns))
-        return moves
+    def a(self, state):
+        return self.val_at(0, state)
 
-    def get_feature(self, at):
-        return eval("self.{}()".format(at.name))
+    def b(self, state):
+        return self.val_at(1, state)
 
-    def a(self):
-        return self.val_at(0)
+    def c(self, state):
+        return self.val_at(2, state)
 
-    def b(self):
-        return self.val_at(1)
+    def d(self, state):
+        return self.val_at(3, state)
 
-    def c(self):
-        return self.val_at(2)
-
-    def d(self):
-        return self.val_at(3)
-
-    def val_at(self, i):
-        val = self.state
+    def val_at(self, i, state):
+        val = state.state
         if val[i] == 0:
             return "0"
         elif val[i] == 1:
@@ -111,14 +100,29 @@ class State:
         else:
             return "2"
 
-    def solved(self):
-        val = self.state
-        if val[0] == 1 and val[1] == 0 and val[2] == 0:
-            return "yes"
-        return "no"    
+
+class Eq1State:
+    """ State-space for solving equations with one unknown. """
+    def __init__(self, state, domain):
+        self.state = state
+        self.domain = domain
+
+    def get_id(self):
+        return self.state
+
+    def get_next_states(self):
+        """ Method that generates possible moves. """
+        new_states = []
+        neighbors = states[self.state]
+        for ns in neighbors:
+            new_states.append(Eq1State(ns, self.domain))
+        return new_states
+
+    def get_attribute(self, at):
+        return self.domain.get_attribute(at, self)
 
     def __hash__(self):
         return hash(str(self.state))
 
     def __eq__(self, other):
-        return self.state == other.state 
+        return self.state == other.state

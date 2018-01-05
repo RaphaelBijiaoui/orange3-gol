@@ -1,70 +1,56 @@
 """ A module for learning a single rule in domains with continuous class. """
 from copy import copy
-from collections import Counter
 import numpy as np
-from scipy.stats import norm
 from Orange.classification.rules import Selector, LengthEvaluator
 from orangecontrib.gol.rule import RRule, MeanEvaluator, GuardianValidator, TTestValidator
 EPS = 1e-3
 
 class RegressiveRuleLearner:
-    """ A rule learner used in goal-oriented learning. A wrapper around
-     BasicLearner. """
-    def __init__(self, min_covered_examples=1, min_transition_examples=1, k=10,
-                 goal_alpha=0.05, cond_alpha=1.0):
-        self.learner = BasicLearner(width=10, min_covered_examples=min_covered_examples,
-                                    k=k, cond_alpha=cond_alpha)
-        self.goal_alpha = goal_alpha
-        self.goal_t_threshold = norm.ppf(1-self.goal_alpha)
-        self.min_transition_examples = min_transition_examples
-
-    def __call__(self, data, goal_selector):
-        X, Y, W = data.X, data.Y, data.W if data.W else None
-        rule = self.learner.fit_storage(data, goal_selector)
-        return rule
-
-class BasicLearner:
-    """
-    A learner for regression rules that employs  beam search strategy.
-    """
-    def __init__(self, width=5, min_covered_examples=1, k=10, cond_alpha=0.05,
-                 max_rule_length=10):
-        """
-        :param width: beam width
-        :param min_cover: minimal coverage of relevant examples
-        :return:
-        """
+    """ A rule learner used in goal-oriented learning. It learns a single
+     regression rule with a modified beam search strategy. """
+    def __init__(self, min_covered_examples=1, C=10, alpha=0.05,
+                 parent_alpha=1.0, width=5, max_rule_length=5,
+                 max_complexity=0):
         self.width = width
-        self.k = k
 
         # memoization attributes (defined later, here used only for reference)
         self.visited = None
         self.storage = None
 
-        self.significance_validator = TTestValidator(alpha=cond_alpha)
-        self.quality_evaluator = MeanEvaluator(self.k)
-        self.complexity_evaluator = LengthEvaluator()
-        self.general_validator = GuardianValidator(max_rule_length=max_rule_length,
-                                                   min_covered_examples=min_covered_examples)
+        self.significance_validator = TTestValidator(alpha=alpha,
+                                                     max_complexity=max_complexity)
+        self.condition_significance_validator = TTestValidator(
+            parent_alpha=parent_alpha,
+            max_rule_length=max_rule_length,
+            min_covered_examples=min_covered_examples,
 
-    def fit_storage(self, data, goal_selector):
+        )
+        self.quality_evaluator = MeanEvaluator(C)
+        self.complexity_evaluator = LengthEvaluator()
+        #self.general_validator = GuardianValidator(max_rule_length=max_rule_length,
+        #                                           min_covered_examples=min_covered_examples)
+
+    def fit_storage(self, data, complexities):
         """
         :param data: learing instances (Orange format)
-        :param relevant: a numpy array specifying which examples have to be covered by rules
+        :param complexities: for each possible goal, complexities for each example
         :return: a set of "best" rules
         """
         X, Y, W = data.X, data.Y, data.W if data.W else None
-        # initialize empty rule
-        initial_rule = RRule(list(range(len(goal_selector.all_goals))), goal_selector,
-                             selectors=[], domain=data.domain,
-                             significance_validator=self.significance_validator,
-                             quality_evaluator=self.quality_evaluator,
-                             complexity_evaluator=self.complexity_evaluator,
-                             general_validator=self.general_validator)
-        initial_rule.filter_and_store(X, Y, W, None)
-        initial_rule.do_evaluate()
-        star = [initial_rule]
-        best_rule = initial_rule
+        # initialize empty rules (one rule for each goal)
+        star = []
+        for ci, c in enumerate(complexities):
+            initial_rule = RRule([ci], complexities,
+                                 selectors=[], domain=data.domain,
+                                 significance_validator=self.significance_validator,
+                                 quality_evaluator=self.quality_evaluator,
+                                 complexity_evaluator=self.complexity_evaluator,
+                                 general_validator=self.condition_significance_validator)
+            initial_rule.filter_and_store(X, Y, W, None)
+            initial_rule.do_evaluate()
+            star.append(initial_rule)
+        best_rule = max(star, key=lambda r: r.quality)
+        print(best_rule, best_rule.quality, best_rule.ncovered, best_rule.general_avg)
 
         # use visited to prevent learning the same rule all over again
         self.visited = set(r for r in star)

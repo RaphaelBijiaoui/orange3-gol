@@ -60,20 +60,21 @@ class GoalValidatorExponentialDepth:
     1. First computes search depth required in instances to achieve a certain goal.
     2. Complexity of the instances corresponds to exponential value of depth.
     """
-    def __init__(self, base=2, inf_complexity_depth=10, search_depth=5):
+    def __init__(self, base=2, zero_depth=10, search_depth=5, inf_depth=100):
         """
+        complexity = base ** (depth - zero_depth)
+
         Keyword Arguments:
         base -- base in exponent
-        zero_complexity_depth -- if depth to reach goal is less or equal to
+        zero_depth -- if depth to reach goal is less or equal to
             this value, complexity of instance equals 0.
-        inf_complexity_depth -- if depth to reach goal exceeds this value,
-            complexity equals base ** (inf_complexity_depth * 2)
         search_depth -- minimal search depth used in goal validation
         """
         self.goal_ach = {}
         self.search_depth = search_depth
         self.base = base
-        self.inf_complexity_depth = inf_complexity_depth
+        self.zero_depth = zero_depth
+        self.inf_depth=inf_depth
 
     def initialize(self, goal, examples, states):
         """
@@ -89,25 +90,21 @@ class GoalValidatorExponentialDepth:
         for ss in solved_states:
             ach[ss] = 0
         # current sets from where we continue searching
-        current_states = set(solved_states)
         unsolved_states = set(states) - solved_states
         distance = 0
         while unsolved_states:
             distance += 1
-            # generate new states from current_states
-            new_solved_states = set()
-            for ss in current_states:
-                new_solved_states |= set(ss.get_next_states())
-
-            # update new solved (only those that are not solved yet)
-            new_solved_states -= solved_states
-            for nss in new_solved_states:
-                ach[nss] = distance
-
-            # update track of states
-            solved_states |= new_solved_states
-            current_states = new_solved_states & unsolved_states
-            unsolved_states -= new_solved_states
+            # from each unsolved state generate new states and check whether 
+            # they are in solved
+            new_solved = set()
+            for ss in unsolved_states:
+                next_states = set(ss.get_next_states())
+                if solved_states & next_states:
+                    new_solved.add(ss)
+                    ach[ss] = distance
+            # update solved and unsolved
+            solved_states |= new_solved
+            unsolved_states -= new_solved
         return ach
 
 
@@ -154,14 +151,14 @@ class GoalValidatorExponentialDepth:
                 # needed for examples, which were added later (active learning).
                 dist = self.bfs(state, goal)
                 if dist is None:
-                    dist = self.inf_complexity_depth + 1
+                    dist = self.inf_depth + 1
                 self.goal_ach[goal][state] = dist
             # determine complexity
-            if dist >= self.inf_complexity_depth:
-                complexities[ei] = self.base ** (self.inf_complexity_depth * 2)
-            else:
-                complexities[ei] = self.base ** dist
+            if dist > self.zero_depth:
+                complexities[ei] = self.base ** (dist - self.zero_depth)
         return complexities
+
+
 
 class GoalSelector:
     """ A class that selects relevant parent goals for a rule.  """
